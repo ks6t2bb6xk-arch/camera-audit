@@ -63,9 +63,9 @@ class StateTests(StateFixture, unittest.TestCase):
             storage.add_scope(self.db, "fd00::/64", True)
 
     def test_scan_confirmation_is_required_each_time(self):
-        self.assertFalse(cli._confirm_scan("192.168.1.0/24", False, lambda _: "yes"))
-        self.assertTrue(cli._confirm_scan("192.168.1.0/24", False, lambda _: "evet"))
-        self.assertFalse(cli._confirm_scan("198.18.0.0/24", True, lambda _: "evet"))
+        self.assertFalse(cli._confirm_scan("192.168.1.0/24", False, lambda _: "no"))
+        self.assertTrue(cli._confirm_scan("192.168.1.0/24", False, lambda _: "yes"))
+        self.assertFalse(cli._confirm_scan("198.18.0.0/24", True, lambda _: "yes"))
         self.assertTrue(cli._confirm_scan("198.18.0.0/24", True, lambda _: "198.18.0.0/24"))
 
     def test_report_permissions_and_no_credentials(self):
@@ -119,9 +119,9 @@ class NVDTests(StateFixture, unittest.TestCase):
 
     def test_enrichment_marks_possible_impact_only(self):
         host = scanner.parse_nmap(SERVICES)[0]
-        fake = types.SimpleNamespace(lookup=lambda _: ([{"id": "CVE-2024-12345", "status": "olası etkilenme"}], "cache", "2026-01-01"))
+        fake = types.SimpleNamespace(lookup=lambda _: ([{"id": "CVE-2024-12345", "status": "potential impact"}], "cache", "2026-01-01"))
         nvd.enrich_hosts([host], fake)
-        self.assertEqual(host["vulnerabilities"][0]["status"], "olası etkilenme")
+        self.assertEqual(host["vulnerabilities"][0]["status"], "potential impact")
         self.assertEqual(host["vulnerabilities"][0]["evidence"]["port"], 554)
 
 
@@ -161,11 +161,12 @@ class PreviewTests(unittest.TestCase):
         fake_av = types.SimpleNamespace(logging=types.SimpleNamespace(PANIC=0, set_level=lambda _: None),
                                         open=lambda *args, **kwargs: Source())
         with patch.dict("sys.modules", {"av": fake_av}), patch("camera_audit.preview.shutil.which", return_value="/usr/bin/ffplay"), patch("camera_audit.preview.subprocess.Popen", side_effect=popen):
-            preview.play("rtsp://192.168.1.20/live", "192.168.1.20", "admin", "secret")
+            self.assertTrue(preview.play("rtsp://192.168.1.20/live", "192.168.1.20", "admin", "secret"))
         command = holder["player"].command
         self.assertNotIn("secret", " ".join(command))
         self.assertNotIn("admin", " ".join(command))
         self.assertNotIn("-record", command)
+        self.assertTrue(holder["player"].stopped)
 
 
 class CLITests(StateFixture, unittest.TestCase):
@@ -176,7 +177,7 @@ class CLITests(StateFixture, unittest.TestCase):
             host["onvif_url"] = None
             host["camera_evidence"] = scanner.candidate_evidence(host)
             host["camera_candidate"] = bool(host["camera_evidence"])
-        with patch("builtins.input", return_value="evet"), \
+        with patch("builtins.input", return_value="yes"), \
              patch("camera_audit.cli.scanner.scan", return_value=hosts), \
              patch("camera_audit.cli.enrich_hosts", side_effect=lambda found, client: None):
             self.assertEqual(cli.main(["scan", "192.168.1.0/24", "--offline"]), 0)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import subprocess
+import time
 import xml.etree.ElementTree as ET
 
 
@@ -16,25 +17,65 @@ class ScanError(RuntimeError):
     pass
 
 
-def _run_nmap(args: list[str], timeout: int) -> str:
+class ScanCancelled(ScanError):
+    pass
+
+
+def _run_nmap(args: list[str], timeout: int, cancel_event=None) -> str:
+    command = ["nmap", *args]
     try:
-        result = subprocess.run(["nmap", *args], capture_output=True, text=True,
-                                timeout=timeout, check=False)
+        if cancel_event is None:
+            result = subprocess.run(command, capture_output=True, text=True,
+                                    timeout=timeout, check=False)
+            returncode, output = result.returncode, result.stdout
+        else:
+            if cancel_event.is_set():
+                raise ScanCancelled("Scan cancelled.")
+            process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       text=True)
+            deadline = time.monotonic() + timeout
+            try:
+                while True:
+                    if cancel_event.is_set():
+                        raise ScanCancelled("Scan cancelled.")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise ScanError("Nmap timed out.")
+                    try:
+                        output, _ = process.communicate(timeout=min(0.3, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            except (ScanCancelled, ScanError):
+                try:
+                    process.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                    except ProcessLookupError:
+                        pass
+                    process.communicate()
+                raise
+            returncode = process.returncode
     except FileNotFoundError as exc:
-        raise ScanError("Nmap kurulu değil.") from exc
+        raise ScanError("Nmap is not installed.") from exc
     except subprocess.TimeoutExpired as exc:
-        raise ScanError("Nmap zaman aşımına uğradı.") from exc
-    if result.returncode != 0:
+        raise ScanError("Nmap timed out.") from exc
+    if returncode != 0:
         # Nmap stderr may contain target names or other network data; do not echo it.
-        raise ScanError(f"Nmap başarısız oldu (çıkış kodu {result.returncode}).")
-    return result.stdout
+        raise ScanError(f"Nmap failed with exit code {returncode}.")
+    return output
 
 
 def parse_nmap(xml_text: str) -> list[dict]:
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError as exc:
-        raise ScanError("Nmap XML çıktısı okunamadı.") from exc
+        raise ScanError("Could not parse Nmap XML output.") from exc
     hosts: list[dict] = []
     for node in root.findall("host"):
         status = node.find("status")
@@ -74,35 +115,46 @@ def parse_nmap(xml_text: str) -> list[dict]:
 def candidate_evidence(host: dict, onvif_url: str | None = None) -> list[str]:
     evidence = []
     if onvif_url:
-        evidence.append("ONVIF WS-Discovery yanıtı")
+        evidence.append("ONVIF WS-Discovery response")
     for port in host["ports"]:
         service = (port.get("service") or "").lower()
         product = " ".join(str(port.get(field) or "") for field in ("product", "extrainfo"))
         if service == "rtsp" or port["port"] in (554, 8554):
-            evidence.append(f"RTSP işareti: TCP {port['port']}")
+            evidence.append(f"RTSP indicator: TCP {port['port']}")
         elif CAMERA_WORDS.search(product):
-            evidence.append(f"Servis ürünü kamera işareti: TCP {port['port']}")
+            evidence.append(f"Camera-related service product: TCP {port['port']}")
     if CAMERA_WORDS.search(host.get("hostname") or ""):
-        evidence.append("Hostname kamera işareti")
+        evidence.append("Camera-related hostname")
     if CAMERA_VENDORS.search(host.get("mac_vendor") or ""):
-        evidence.append("MAC üreticisi kamera işareti")
+        evidence.append("Camera vendor in MAC address")
     return list(dict.fromkeys(evidence))
 
 
-def scan(cidr: str, onvif_discovery=None) -> list[dict]:
+def scan(cidr: str, onvif_discovery=None, progress=None, cancel_event=None) -> list[dict]:
     network = ipaddress.ip_network(cidr, strict=True)
     if network.version != 4:
-        raise ScanError("Bu sürüm yalnızca IPv4 CIDR taramasını destekler.")
-    discovery = parse_nmap(_run_nmap(["-sn", "-oX", "-", str(network)], 300))
+        raise ScanError("This version supports IPv4 CIDR scans only.")
+    discovery_args = ["-sn", "-oX", "-", str(network)]
+    discovery = parse_nmap(_run_nmap(discovery_args, 300, cancel_event) if cancel_event else
+                           _run_nmap(discovery_args, 300))
     live_ips = [host["ip"] for host in discovery if ipaddress.ip_address(host["ip"]) in network]
     if not live_ips:
         return []
+    if progress:
+        progress("Fingerprinting services")
     # All addresses are obtained from Nmap XML and checked against the approved CIDR.
-    service_xml = _run_nmap(["-sT", "-sV", "--version-light", "--top-ports", "1000",
-                             "-T3", "-Pn", "-oX", "-", *live_ips], 1200)
+    service_args = ["-sT", "-sV", "--version-light", "--top-ports", "1000",
+                    "-T3", "-Pn", "-oX", "-", *live_ips]
+    service_xml = _run_nmap(service_args, 1200, cancel_event) if cancel_event else _run_nmap(service_args, 1200)
     service_hosts = {host["ip"]: host for host in parse_nmap(service_xml)
                      if ipaddress.ip_address(host["ip"]) in network}
+    if progress:
+        progress("Discovering ONVIF devices")
+    if cancel_event and cancel_event.is_set():
+        raise ScanCancelled("Scan cancelled.")
     found_onvif = onvif_discovery(network) if onvif_discovery else {}
+    if cancel_event and cancel_event.is_set():
+        raise ScanCancelled("Scan cancelled.")
     output = []
     for discovered in discovery:
         ip = discovered["ip"]
@@ -112,7 +164,9 @@ def scan(cidr: str, onvif_discovery=None) -> list[dict]:
         host["mac"] = host.get("mac") or discovered.get("mac")
         host["mac_vendor"] = host.get("mac_vendor") or discovered.get("mac_vendor")
         host["hostname"] = host.get("hostname") or discovered.get("hostname")
-        host["onvif_url"] = found_onvif.get(ip)
+        onvif_result = found_onvif.get(ip)
+        host["onvif_url"] = onvif_result.get("url") if isinstance(onvif_result, dict) else onvif_result
+        host["onvif_uuid"] = onvif_result.get("uuid") if isinstance(onvif_result, dict) else None
         host["camera_evidence"] = candidate_evidence(host, host["onvif_url"])
         host["camera_candidate"] = bool(host["camera_evidence"])
         output.append(host)

@@ -63,7 +63,7 @@ def _summarize(payload: dict) -> list[dict]:
         english = next((value.get("value") for value in descriptions if value.get("lang") == "en"), None)
         findings.append({
             "id": identifier,
-            "status": "olası etkilenme",
+            "status": "potential impact",
             "score": score,
             "severity": severity,
             "description": english[:500] if english else None,
@@ -93,12 +93,12 @@ class NVDClient:
             self._last_request = time.monotonic()
             response = requests.get(API_URL + "?isVulnerable",
                                     params={"cpeName": cpe, "resultsPerPage": 2000},
-                                    headers={"User-Agent": "camera-audit/0.1"}, timeout=20)
+                                    headers={"User-Agent": "camera-audit/0.2"}, timeout=20)
             response.raise_for_status()
             payload = response.json()
             if payload.get("totalResults", 0) > payload.get("resultsPerPage", 2000):
                 # Avoid presenting an incomplete CVE list as exhaustive.
-                raise ValueError("NVD sonuç sayısı tek sayfayı aşıyor")
+                raise ValueError("NVD result count exceeds a single page")
             findings = _summarize(payload)
             fetched_at = datetime.now(timezone.utc).isoformat()
             self.db.execute("INSERT OR REPLACE INTO nvd_cache(cpe, fetched_at, payload_json) VALUES (?, ?, ?)",
@@ -109,13 +109,18 @@ class NVDClient:
             return (json.loads(row["payload_json"]), "stale_cache", row["fetched_at"]) if row else ([], "lookup_unavailable", None)
 
 
-def enrich_hosts(hosts: list[dict], client: NVDClient) -> None:
+def enrich_hosts(hosts: list[dict], client: NVDClient, cancel_event=None) -> None:
+    from .scanner import ScanCancelled
     memo: dict[str, tuple[list[dict], str, str | None]] = {}
     for host in hosts:
+        if cancel_event is not None and cancel_event.is_set():
+            raise ScanCancelled("Scan cancelled.")
         host["vulnerabilities"] = []
         host["nvd_status"] = "no_versioned_cpe"
         for port in host["ports"]:
             for raw_cpe in port.get("cpes", []):
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ScanCancelled("Scan cancelled.")
                 cpe = normalized_cpe(raw_cpe)
                 if not cpe:
                     continue

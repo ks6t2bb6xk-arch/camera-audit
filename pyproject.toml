@@ -4,13 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "camera-audit"
-version = "0.1.0"
-description = "Authorized camera inventory and security audit CLI"
+version = "0.2.0"
+description = "Authorized camera security testing with a local interface and CLI"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "keyring>=25",
   "requests>=2.32",
   "secretstorage>=3.3; sys_platform == 'linux'",
+  "av>=15,<20",
 ]
 
 [project.optional-dependencies]
@@ -22,3 +24,6 @@ camera-audit = "camera_audit.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+camera_audit = ["web/*.html", "web/*.css", "web/*.js"]

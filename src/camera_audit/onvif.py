@@ -21,12 +21,16 @@ class OnvifError(RuntimeError):
     pass
 
 
+class OnvifAuthRequired(OnvifError):
+    pass
+
+
 def validate_device_url(url: str, ip: str, schemes: tuple[str, ...]) -> str:
     parsed = urlsplit(url)
     if parsed.scheme not in schemes or parsed.hostname != ip or parsed.username or parsed.password:
-        raise ValueError("URL protokolü veya hedef IP onaylanan kamerayla eşleşmiyor; URL'de parola olamaz.")
+        raise ValueError("URL scheme or target IP does not match the approved camera; URLs must not contain passwords.")
     if parsed.fragment:
-        raise ValueError("URL fragment içeremez.")
+        raise ValueError("URL must not contain a fragment.")
     return url
 
 
@@ -37,7 +41,19 @@ def _find_text(root: ET.Element, local_name: str) -> str | None:
     return None
 
 
-def discover(network: ipaddress.IPv4Network, timeout: float = 2.0) -> dict[str, str]:
+def _device_uuid(root: ET.Element) -> str | None:
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] == "EndpointReference":
+            address = _find_text(element, "Address")
+            if address:
+                try:
+                    return str(uuid.UUID(address.rsplit(":", 1)[-1]))
+                except ValueError:
+                    return None
+    return None
+
+
+def discover_devices(network: ipaddress.IPv4Network, timeout: float = 2.0) -> dict[str, dict]:
     message_id = uuid.uuid4()
     probe = (f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" '
              f'xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing" '
@@ -46,7 +62,7 @@ def discover(network: ipaddress.IPv4Network, timeout: float = 2.0) -> dict[str, 
              f'<a:MessageID>uuid:{message_id}</a:MessageID>'
              f'<a:To>urn:schemas-xmlsoap-org:ws:2005:04:discovery</a:To></s:Header>'
              f'<s:Body><d:Probe/></s:Body></s:Envelope>')
-    found: dict[str, str] = {}
+    found: dict[str, dict] = {}
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.settimeout(timeout)
@@ -63,8 +79,9 @@ def discover(network: ipaddress.IPv4Network, timeout: float = 2.0) -> dict[str, 
                     root = ET.fromstring(payload)
                     addresses = (_find_text(root, "XAddrs") or "").split()
                     for address in addresses:
-                        if urlsplit(address).hostname == ip:
-                            found[ip] = validate_device_url(address, ip, ("http", "https"))
+                        if urlsplit(address).hostname == ip and not urlsplit(address).query:
+                            found[ip] = {"url": validate_device_url(address, ip, ("http", "https")),
+                                         "uuid": _device_uuid(root)}
                             break
                 except (ET.ParseError, ValueError):
                     continue
@@ -72,6 +89,11 @@ def discover(network: ipaddress.IPv4Network, timeout: float = 2.0) -> dict[str, 
         # Nmap inventory still works on networks that block multicast.
         return {}
     return found
+
+
+def discover(network: ipaddress.IPv4Network, timeout: float = 2.0) -> dict[str, str]:
+    """Keep the original IP-to-URL discovery interface available."""
+    return {ip: details["url"] for ip, details in discover_devices(network, timeout).items()}
 
 
 def _security_header(username: str | None, password: str | None) -> str:
@@ -103,19 +125,21 @@ def _request(url: str, ip: str, body: str, username: str | None, password: str |
                                  headers={"Content-Type": "application/soap+xml; charset=utf-8"},
                                  auth=HTTPDigestAuth(username, password) if username and password else None,
                                  timeout=8, allow_redirects=False)
+        if response.status_code == 401:
+            raise OnvifAuthRequired("ONVIF authentication is required or the credentials were rejected.")
         response.raise_for_status()
         if len(response.content) > 1_000_000:
-            raise OnvifError("ONVIF yanıtı beklenenden büyük.")
+            raise OnvifError("ONVIF response is larger than expected.")
         root = ET.fromstring(response.content)
     except (requests.RequestException, ET.ParseError) as exc:
-        raise OnvifError("ONVIF isteği başarısız; erişim veya kimlik bilgilerini kontrol edin.") from exc
+        raise OnvifError("ONVIF request failed; check network access and credentials.") from exc
     if _find_text(root, "Fault") or any(el.tag.rsplit("}", 1)[-1] == "Fault" for el in root.iter()):
-        raise OnvifError("Kamera ONVIF isteğini reddetti.")
+        raise OnvifError("Camera rejected the ONVIF request.")
     return root
 
 
-def get_stream_uri(device_url: str, ip: str,
-                   username: str | None, password: str | None) -> str:
+def list_profiles(device_url: str, ip: str,
+                  username: str | None, password: str | None) -> list[dict]:
     capabilities = _request(device_url, ip, "<tds:GetCapabilities><tds:Category>Media</tds:Category></tds:GetCapabilities>",
                             username, password)
     media_url = None
@@ -125,22 +149,40 @@ def get_stream_uri(device_url: str, ip: str,
             if media_url:
                 break
     if not media_url:
-        raise OnvifError("Kamera ONVIF Media adresi bildirmedi.")
+        raise OnvifError("Camera did not provide an ONVIF Media endpoint.")
     validate_device_url(media_url, ip, ("http", "https"))
     profiles = _request(media_url, ip, "<trt:GetProfiles/>", username, password)
-    token = None
+    found = []
     for el in profiles.iter():
         if el.tag.rsplit("}", 1)[-1] == "Profiles":
             token = el.attrib.get("token")
             if token:
-                break
-    if not token:
-        raise OnvifError("Kamera ONVIF medya profili bildirmedi.")
+                found.append({"token": token, "name": _find_text(el, "Name") or token,
+                              "media_url": media_url})
+    if not found:
+        raise OnvifError("Camera did not provide an ONVIF media profile.")
+    return found
+
+
+def get_stream_uri(device_url: str, ip: str,
+                   username: str | None, password: str | None,
+                   profile_token: str | None = None) -> str:
+    profiles = list_profiles(device_url, ip, username, password)
+    profile = next((item for item in profiles if item["token"] == profile_token), None) if profile_token else profiles[0]
+    if profile is None:
+        raise OnvifError("Selected ONVIF media profile is no longer available.")
+    return stream_uri_for_profile(profile, ip, username, password)
+
+
+def stream_uri_for_profile(profile: dict, ip: str,
+                           username: str | None, password: str | None) -> str:
+    token, media_url = profile["token"], profile["media_url"]
+    validate_device_url(media_url, ip, ("http", "https"))
     body = ("<trt:GetStreamUri><trt:StreamSetup><tt:Stream>RTP-Unicast</tt:Stream>"
             "<tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport>"
             f"</trt:StreamSetup><trt:ProfileToken>{escape(token)}</trt:ProfileToken></trt:GetStreamUri>")
     response = _request(media_url, ip, body, username, password)
     uri = _find_text(response, "Uri")
     if not uri:
-        raise OnvifError("Kamera RTSP URI bildirmedi.")
+        raise OnvifError("Camera did not provide an RTSP URI.")
     return validate_device_url(uri, ip, ("rtsp", "rtsps"))

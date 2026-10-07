@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="camera-audit-token" content="__SESSION_TOKEN__">
+  <title>Camera Audit</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">◎</span><span>camera<span class="brand-light">audit</span></span></div>
+      <div class="top-actions"><span class="local-badge"><span class="local-dot"></span>Local session</span><button id="quit" class="text-button" type="button">Close app</button></div>
+    </header>
+
+    <main>
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">AUTHORIZED CAMERA SECURITY TESTING</p>
+        <h1 id="page-title">Choose your workflow.</h1>
+        <p class="lede">Find devices on a network you are authorized to assess. Add camera stream inspection when you need it.</p>
+      </section>
+
+      <section class="mode-grid" aria-label="Workflows">
+        <button class="mode-card" id="mode-scan" type="button" aria-pressed="false">
+          <span class="mode-icon mode-icon-scan" aria-hidden="true">⌁</span>
+          <span class="mode-kicker">01 / INVENTORY</span>
+          <strong>Scan only</strong>
+          <span>Discover live devices, services, camera candidates, and possible CVE matches.</span>
+          <span class="mode-action">Select workflow <span aria-hidden="true">↗</span></span>
+        </button>
+        <button class="mode-card" id="mode-watch" type="button" aria-pressed="false">
+          <span class="mode-icon mode-icon-watch" aria-hidden="true">◉</span>
+          <span class="mode-kicker">02 / STREAM INSPECTION</span>
+          <strong>Scan + Watch</strong>
+          <span>Run a fresh scan, choose a camera, and open an approved live preview.</span>
+          <span class="mode-action">Select workflow <span aria-hidden="true">↗</span></span>
+        </button>
+      </section>
+
+      <section id="target-panel" class="panel target-panel hidden" aria-labelledby="target-heading">
+        <div class="panel-heading"><div><p class="eyebrow">TARGET</p><h2 id="target-heading">Network to assess</h2></div><span class="step-pill">STEP 1 OF 2</span></div>
+        <div class="target-layout">
+          <div>
+            <label for="cidr">IPv4 network (CIDR)</label>
+            <input id="cidr" type="text" inputmode="text" spellcheck="false" autocomplete="off" placeholder="192.168.1.0/24">
+            <p id="network-hint" class="hint">Checking the default-route network…</p>
+          </div>
+          <div class="scan-profile"><span class="profile-icon" aria-hidden="true">◌</span><div><strong>Controlled scan</strong><span>Live hosts · top 1,000 TCP ports · light service detection</span></div></div>
+        </div>
+        <div class="panel-footer"><p>Review the exact target and confirm authorization before scanning.</p><button id="start-scan" class="primary-button" type="button">Start scan <span aria-hidden="true">→</span></button></div>
+      </section>
+
+      <section id="activity" class="activity hidden" aria-live="polite"><span id="activity-dot" class="activity-dot"></span><div><strong id="activity-title">Ready</strong><p id="activity-detail"></p></div><button id="cancel-scan" class="secondary-button hidden" type="button">Cancel scan</button></section>
+
+      <section id="results" class="results hidden" aria-labelledby="results-heading">
+        <div class="results-head"><div><p class="eyebrow">SCAN REPORT</p><h2 id="results-heading">Discovered devices</h2><p id="results-subtitle" class="hint"></p></div><button id="download" class="secondary-button" type="button">Download JSON report ↓</button></div>
+        <div class="stat-grid"><div><strong id="stat-hosts">0</strong><span>Live hosts</span></div><div><strong id="stat-cameras">0</strong><span>Camera candidates</span></div><div><strong id="stat-findings">0</strong><span>Possible CVE matches</span></div></div>
+        <div class="results-controls"><label><input id="candidates-only" type="checkbox"> Camera candidates only</label><span id="results-range" class="hint"></span></div>
+        <div id="host-list" class="host-list"></div>
+        <div id="results-pages" class="results-pages hidden"><button id="previous-page" class="secondary-button" type="button">← Previous</button><span id="page-label" class="hint"></span><button id="next-page" class="secondary-button" type="button">Next →</button></div>
+      </section>
+    </main>
+    <footer>Camera Audit · For authorized penetration testing and security research.</footer>
+  </div>
+
+  <div id="modal-backdrop" class="modal-backdrop hidden">
+    <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <p id="modal-kicker" class="eyebrow">CONFIRMATION</p>
+      <h2 id="modal-title">Confirm action</h2>
+      <p id="modal-message"></p>
+      <div id="modal-body"></div>
+      <p id="modal-error" class="modal-error hidden" role="alert"></p>
+      <div class="modal-actions"><button id="modal-cancel" class="secondary-button" type="button">Cancel</button><button id="modal-confirm" class="primary-button" type="button">Continue</button></div>
+    </section>
+  </div>
+</body>
+</html>
