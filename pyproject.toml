@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "camera-audit"
+version = "0.1.0"
+description = "Authorized camera inventory and security audit CLI"
+requires-python = ">=3.11"
+dependencies = [
+  "keyring>=25",
+  "requests>=2.32",
+  "secretstorage>=3.3; sys_platform == 'linux'",
+]
+
+[project.optional-dependencies]
+preview = ["av>=15,<20"]
+test = ["pytest>=8"]
+
+[project.scripts]
+camera-audit = "camera_audit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
