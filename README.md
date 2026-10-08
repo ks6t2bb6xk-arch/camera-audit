@@ -106,3 +106,7 @@ python -m unittest discover -s tests -v
 ```
 
 The tests use sample Nmap XML, mocked ONVIF and RTSP responses, and a fake player. They do not require a camera, internet access, or a real network scan. Reinstall with `python -m pip install .` after changing the source code.
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
